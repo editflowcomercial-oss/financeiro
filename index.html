@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Controle Financeiro Premium</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+      body { background: #050505; color: #f8fafc; }
+      .glass { background: rgba(15,23,42,.76); backdrop-filter: blur(18px); border: 1px solid rgba(148,163,184,.18); }
+      .soft { box-shadow: 0 24px 70px rgba(0,0,0,.35); }
+      .scrollbar::-webkit-scrollbar { width: 7px; height: 7px; }
+      .scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 999px; }
+      .value-fit { font-size: clamp(1rem, 2vw, 1.75rem); word-break: break-word; }
+      input, select, textarea { color: #fff; }
+      @media print { .no-print { display:none!important; } body { background:white;color:black; } }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useState } = React;
+      const {
+        AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
+        CartesianGrid, ResponsiveContainer, Legend
+      } = Recharts;
+
+      // =========================================================
+      // CONFIGURAÇÃO SUPABASE / IA REAL
+      // =========================================================
+      // Este arquivo está 100% funcional como MVP localStorage.
+      // Para produção real, conecte estas ações ao Supabase:
+      // - login/criação de conta: supabase.auth.signInWithPassword / signUp
+      // - transações: tabela transacoes
+      // - auditoria: tabela registro_de_auditoria
+      // - IA: crie uma Edge Function segura chamando seu provedor de IA
+      // Nunca exponha chave secreta de IA no frontend.
+
+      const BRL = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
+      const uid = () => crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random());
+      const todayISO = () => new Date().toISOString().slice(0,10);
+      const storage = {
+        get(k, fallback) { try { return JSON.parse(localStorage.getItem(k)) ?? fallback } catch { return fallback } },
+        set(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+      };
+
+      const seedProducts = [
+        { id: uid(), nome: 'Produto Exemplo', preco: 97 },
+        { id: uid(), nome: 'Serviço Premium', preco: 250 },
+        { id: uid(), nome: 'Consultoria', preco: 500 }
+      ];
+
+      function App() {
+        const [user, setUser] = useState(() => storage.get('cf_user', null));
+        const [route, setRoute] = useState(() => normalizeRoute(location.pathname));
+        const [menuOpen, setMenuOpen] = useState(false);
+        const [transactions, setTransactions] = useState(() => storage.get('cf_transactions', []));
+        const [audit, setAudit] = useState(() => storage.get('cf_audit', []));
+        const [products, setProducts] = useState(() => storage.get('cf_products', seedProducts));
+
+        useEffect(() => {
+          const onPop = () => setRoute(normalizeRoute(location.pathname));
+          window.addEventListener('popstate', onPop);
+          return () => window.removeEventListener('popstate', onPop);
+        }, []);
+        useEffect(() => storage.set('cf_user', user), [user]);
+        useEffect(() => storage.set('cf_transactions', transactions), [transactions]);
+        useEffect(() => storage.set('cf_audit', audit), [audit]);
+        useEffect(() => storage.set('cf_products', products), [products]);
+
+        function normalizeRoute(path) {
+          if (!path || path === '/') return user ? '/painel' : '/conecte-se';
+          const map = {'/login':'/conecte-se','/ai':'/ia','/historico':'/historico','/histórico':'/historico','/disse':'/saidas','/saídas':'/saidas'};
+          return map[path] || path;
+        }
+        function go(path) {
+          history.pushState({}, '', path);
+          setRoute(normalizeRoute(path));
+          setMenuOpen(false);
+        }
+        function log(action, entity, desc) {
+          setAudit(prev => [{ id: uid(), action, entity, desc, at: new Date().toISOString(), user: user?.email || 'local' }, ...prev]);
+        }
+        function addTransaction(t) {
+          setTransactions(prev => [{ id: uid(), created_at: new Date().toISOString(), ...t }, ...prev]);
+          log('Criar', 'Transação', `${t.tipo === 'entrada' ? 'Entrada' : 'Saída'}: ${t.descricao}`);
+        }
+        function updateTransaction(id, patch) {
+          setTransactions(prev => prev.map(t => t.id === id ? { ...t, ...patch, updated_at: new Date().toISOString() } : t));
+          log('Atualizar', 'Transação', `Transação editada`);
+        }
+        function deleteTransaction(id) {
+          const found = transactions.find(t => t.id === id);
+          if (!confirm('Confirmar exclusão?')) return;
+          setTransactions(prev => prev.filter(t => t.id !== id));
+          log('Excluir', 'Transação', found?.descricao || id);
+        }
+
+        if (!user || route === '/conecte-se') return <Login user={user} setUser={setUser} go={go} />;
+
+        return <div className="min-h-screen flex">
+          <Sidebar user={user} go={go} route={route} onLogout={() => { setUser(null); go('/conecte-se'); }} menuOpen={menuOpen} setMenuOpen={setMenuOpen} />
+          <main className="flex-1 md:ml-72 p-4 md:p-8">
+            <button onClick={() => setMenuOpen(true)} className="md:hidden no-print mb-4 px-4 py-2 rounded-xl bg-slate-800 border border-slate-700">☰ Menu</button>
+            {route === '/painel' && <Dashboard transactions={transactions} deleteTransaction={deleteTransaction} />}
+            {route === '/faturamento' && <Revenue transactions={transactions} />}
+            {route === '/entradas' && <Entries products={products} setProducts={setProducts} addTransaction={addTransaction} transactions={transactions} deleteTransaction={deleteTransaction} />}
+            {route === '/saidas' && <Expenses addTransaction={addTransaction} transactions={transactions} updateTransaction={updateTransaction} deleteTransaction={deleteTransaction} />}
+            {route === '/ia' && <AI transactions={transactions} addTransaction={addTransaction} />}
+            {route === '/historico' && <History audit={audit} />}
+          </main>
+        </div>;
+      }
+
+      function Login({ user, setUser, go }) {
+        const [mode, setMode] = useState('entrar');
+        const [email, setEmail] = useState('');
+        const [senha, setSenha] = useState('');
+        useEffect(() => { if (user) go('/painel'); }, []);
+        function submit(e) {
+          e.preventDefault();
+          if (!email || !senha) return alert('Preencha e-mail e senha.');
+          setUser({ email, name: email.split('@')[0] });
+          go('/painel');
+        }
+        return <div className="min-h-screen grid md:grid-cols-2 bg-black">
+          <section className="hidden md:flex flex-col justify-between p-12 bg-gradient-to-br from-slate-950 via-slate-900 to-black">
+            <div className="text-sm text-slate-400">ERP Financeiro Premium</div>
+            <div>
+              <h1 className="text-5xl font-black leading-tight">Controle financeiro premium para sua loja.</h1>
+              <p className="mt-6 text-slate-300 text-lg">Caixa, faturamento, lucro, despesas, histórico e IA em uma operação centralizada.</p>
+              <div className="grid grid-cols-3 gap-4 mt-10">
+                <MiniStat label="Saldo" value="R$ 42.850" />
+                <MiniStat label="Lucro" value="R$ 18.440" />
+                <MiniStat label="Meta" value="50k" />
+              </div>
+            </div>
+            <p className="text-slate-500">Feito para lojistas que querem previsibilidade.</p>
+          </section>
+          <section className="flex items-center justify-center p-6">
+            <form onSubmit={submit} className="glass soft w-full max-w-md p-8 rounded-3xl">
+              <h2 className="text-3xl font-bold">{mode === 'entrar' ? 'Conecte-se' : 'Criar conta'}</h2>
+              <p className="text-slate-400 mt-2">Acesse seu painel financeiro.</p>
+              <label className="block mt-6 text-sm text-slate-300">E-mail</label>
+              <input className="w-full mt-2 px-4 py-3 rounded-xl bg-slate-950 border border-slate-700 outline-none focus:border-blue-500" type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="voce@loja.com" />
+              <label className="block mt-4 text-sm text-slate-300">Senha</label>
+              <input className="w-full mt-2 px-4 py-3 rounded-xl bg-slate-950 border border-slate-700 outline-none focus:border-blue-500" type="password" value={senha} onChange={e=>setSenha(e.target.value)} placeholder="••••••••" />
+              <button className="w-full mt-6 py-3 rounded-xl bg-white text-black font-bold hover:bg-slate-200">{mode === 'entrar' ? 'Entrar' : 'Criar conta'}</button>
+              <button type="button" onClick={()=>setMode(mode === 'entrar' ? 'criar' : 'entrar')} className="w-full mt-4 text-sm text-slate-300 hover:text-white">
+                {mode === 'entrar' ? 'Ainda não tem conta? Criar conta' : 'Já tenho conta. Entrar'}
+              </button>
+            </form>
+          </section>
+        </div>;
+      }
+
+      function Sidebar({ user, go, route, onLogout, menuOpen, setMenuOpen }) {
+        const items = [
+          ['💰','/painel','Caixa'], ['📈','/faturamento','Faturamento'], ['🛒','/entradas','Entradas'],
+          ['💸','/saidas','Saídas'], ['🤖','/ia','IA Assistente'], ['📜','/historico','Histórico']
+        ];
+        return <>
+          {menuOpen && <div onClick={()=>setMenuOpen(false)} className="fixed inset-0 bg-black/70 z-30 md:hidden" />}
+          <aside className={`no-print fixed z-40 left-0 top-0 h-full w-72 bg-slate-950 border-r border-slate-800 p-5 transition-transform ${menuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+            <div className="flex items-center justify-between mb-8">
+              <div>
+                <div className="text-xl font-black">Flow Caixa</div>
+                <div className="text-xs text-slate-500">painel financeiro</div>
+              </div>
+              <button className="md:hidden" onClick={()=>setMenuOpen(false)}>✕</button>
+            </div>
+            <nav className="space-y-2">
+              {items.map(([icon,path,label]) => <button key={path} onClick={()=>go(path)} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left ${route===path ? 'bg-white text-black font-bold' : 'text-slate-300 hover:bg-slate-900'}`}><span>{icon}</span>{label}</button>)}
+            </nav>
+            <div className="absolute bottom-5 left-5 right-5 glass rounded-2xl p-4">
+              <div className="text-xs text-slate-400">Usuário logado</div>
+              <div className="truncate text-sm mt-1">{user.email}</div>
+              <button onClick={onLogout} className="mt-3 w-full py-2 rounded-xl bg-red-500/15 text-red-300 border border-red-500/30">Sair</button>
+            </div>
+          </aside>
+        </>;
+      }
+
+      function MiniStat({ label, value }) { return <div className="glass rounded-2xl p-4"><div className="text-slate-400 text-xs">{label}</div><div className="font-bold mt-1">{value}</div></div> }
+      function Header({ title, desc }) { return <div className="mb-6"><h1 className="text-3xl md:text-4xl font-black">{title}</h1><p className="text-slate-400 mt-2">{desc}</p></div> }
+      function Card({ children, className='' }) { return <div className={`glass rounded-3xl p-4 md:p-5 soft ${className}`}>{children}</div> }
+      function KPI({ label, value, sub, good }) { return <Card><div className="text-xs text-slate-400">{label}</div><div className={`value-fit font-black mt-2 ${good===true?'text-emerald-300':good===false?'text-red-300':''}`}>{value}</div>{sub && <div className="text-xs text-slate-500 mt-2">{sub}</div>}</Card> }
+
+      function useFiltered(transactions, initial='30') {
+        const [period, setPeriod] = useState(initial);
+        const [start, setStart] = useState(todayISO());
+        const [end, setEnd] = useState(todayISO());
+        const filtered = useMemo(() => transactions.filter(t => inPeriod(t.data_da_transacao, period, start, end)), [transactions, period, start, end]);
+        return { period, setPeriod, start, setStart, end, setEnd, filtered };
+      }
+      function inPeriod(date, period, start, end) {
+        const d = new Date(date+'T00:00:00'); const now = new Date(); const today = new Date(todayISO()+'T00:00:00');
+        if (period === 'hoje') return date === todayISO();
+        if (period === 'ontem') { const y = new Date(today); y.setDate(y.getDate()-1); return date === y.toISOString().slice(0,10); }
+        if (period === 'custom') return date >= start && date <= end;
+        const days = Number(period); const from = new Date(today); from.setDate(from.getDate() - (days-1));
+        return d >= from && d <= today;
+      }
+      function PeriodFilter({ period, setPeriod, start, setStart, end, setEnd, includeYesterday=false }) {
+        const opts = includeYesterday ? [['hoje','Hoje'],['ontem','Ontem'],['7','7 dias'],['30','30 dias'],['90','90 dias'],['custom','Personalizado']] : [['hoje','Hoje'],['7','7 dias'],['30','30 dias'],['90','90 dias'],['custom','Personalizado']];
+        return <div className="no-print flex flex-wrap gap-2 mb-6">
+          {opts.map(([v,l]) => <button key={v} onClick={()=>setPeriod(v)} className={`px-4 py-2 rounded-xl border ${period===v?'bg-white text-black border-white':'bg-slate-900 border-slate-700 text-slate-300'}`}>{l}</button>)}
+          {period === 'custom' && <><input type="date" value={start} onChange={e=>setStart(e.target.value)} className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700"/><input type="date" value={end} onChange={e=>setEnd(e.target.value)} className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700"/></>}
+        </div>;
+      }
+      function sum(arr, fn) { return arr.reduce((a,b)=>a+Number(fn(b)||0),0); }
+      function groupDaily(arr) {
+        const map = {};
+        arr.forEach(t => { const k=t.data_da_transacao; map[k] ||= { date:k, entradas:0, saidas:0, liquido:0 }; if(t.tipo==='entrada'){map[k].entradas += Number(t.quantia); map[k].liquido += Number(t.quantia)} else {map[k].saidas += Number(t.category?.total_a_pagar || t.quantia); map[k].liquido -= Number(t.category?.total_a_pagar || t.quantia)} });
+        return Object.values(map).sort((a,b)=>a.date.localeCompare(b.date));
+      }
+      function greeting() {
+        const hour = Number(new Intl.DateTimeFormat('pt-BR', { timeZone:'America/Sao_Paulo', hour:'2-digit', hour12:false }).format(new Date()));
+        if (hour < 12) return 'Bom dia'; if (hour < 18) return 'Boa tarde'; return 'Boa noite';
+      }
+
+      function Dashboard({ transactions, deleteTransaction }) {
+        const f = useFiltered(transactions, '30');
+        const hoje = transactions.filter(t=>t.data_da_transacao===todayISO());
+        const entradasHoje = sum(hoje.filter(t=>t.tipo==='entrada'), t=>t.quantia);
+        const saidasHoje = sum(hoje.filter(t=>t.tipo==='saida'), t=>t.category?.total_a_pagar || t.quantia);
+        const entradas = sum(f.filtered.filter(t=>t.tipo==='entrada'), t=>t.quantia);
+        const saidas = sum(f.filtered.filter(t=>t.tipo==='saida'), t=>t.category?.total_a_pagar || t.quantia);
+        const saldo = entradas - saidas;
+        const metas = [0,10000,50000,100000,500000,1000000,2000000,3000000,5000000,10000000];
+        const next = metas.find(m=>m>entradas) || entradas*2;
+        const prev = metas[metas.indexOf(next)-1] || 0;
+        const pct = Math.min(100, ((entradas-prev)/(next-prev))*100 || 0);
+        return <>
+          <Header title={`${greeting()}, controle seu caixa`} desc="Resumo financeiro em tempo real com metas, KPIs e últimas movimentações." />
+          <Card className="mb-6">
+            <div className="flex justify-between text-sm mb-2"><span>Meta progressiva</span><span>{BRL.format(entradas)} / {BRL.format(next)}</span></div>
+            <div className="h-4 bg-slate-800 rounded-full overflow-hidden"><div className="h-full bg-white" style={{width:pct+'%'}} /></div>
+          </Card>
+          <PeriodFilter {...f} />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <KPI label="Saldo no período" value={BRL.format(saldo)} good={saldo>=0}/><KPI label="Entradas hoje" value={BRL.format(entradasHoje)} good/><KPI label="Saídas hoje" value={BRL.format(saidasHoje)} good={false}/><KPI label="Saldo do dia" value={BRL.format(entradasHoje-saidasHoje)} good={entradasHoje-saidasHoje>=0}/>
+            <KPI label="Entradas no período" value={BRL.format(entradas)} good/><KPI label="Saídas no período" value={BRL.format(saidas)} good={false}/><KPI label="Faturamento" value={BRL.format(entradas)} sub="Entradas líquidas"/><KPI label="Movimentações" value={f.filtered.length} />
+          </div>
+          <Card className="mb-6 h-80"><ResponsiveContainer><AreaChart data={groupDaily(f.filtered)}><CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/><XAxis dataKey="date" stroke="#94a3b8"/><YAxis stroke="#94a3b8"/><Tooltip/><Legend/><Area type="monotone" dataKey="entradas" stroke="#22c55e" fill="#22c55e" fillOpacity={0.2}/><Area type="monotone" dataKey="saidas" stroke="#ef4444" fill="#ef4444" fillOpacity={0.2}/></AreaChart></ResponsiveContainer></Card>
+          <Movements transactions={transactions.slice(0,8)} deleteTransaction={deleteTransaction} />
+        </>;
+      }
+
+      function Movements({ transactions, deleteTransaction }) {
+        return <Card><h2 className="font-bold text-xl mb-4">Últimas movimentações</h2><div className="space-y-3">{transactions.length===0 && <p className="text-slate-500">Nenhuma movimentação ainda.</p>}{transactions.map(t=><div key={t.id} className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-950/60 border border-slate-800"><div><div className="font-semibold">{t.tipo==='entrada'?'🟢':'🔴'} {t.descricao}</div><div className="text-xs text-slate-500">{t.data_da_transacao} · {t.metodo_de_pagamento || '—'}</div></div><div className="text-right"><div className={t.tipo==='entrada'?'text-emerald-300 font-bold':'text-red-300 font-bold'}>{t.tipo==='entrada'?'+':'-'} {BRL.format(t.tipo==='saida' ? (t.category?.total_a_pagar || t.quantia) : t.quantia)}</div>{deleteTransaction && <button onClick={()=>deleteTransaction(t.id)} className="text-xs text-slate-500 hover:text-red-300 no-print">excluir</button>}</div></div>)}</div></Card>
+      }
+
+      function Revenue({ transactions }) {
+        const f = useFiltered(transactions, '30');
+        const entradas = f.filtered.filter(t=>t.tipo==='entrada');
+        const saidas = f.filtered.filter(t=>t.tipo==='saida');
+        const bruto = sum(entradas, t=>t.category?.bruto || t.quantia);
+        const liquido = sum(entradas, t=>t.quantia);
+        const s = sum(saidas, t=>t.category?.total_a_pagar || t.quantia);
+        const ticket = entradas.length ? liquido / entradas.length : 0;
+        const pay = Object.values(entradas.reduce((acc,t)=>{ const k=t.metodo_de_pagamento||'Outro'; acc[k] ||= { name:k, value:0 }; acc[k].value += Number(t.quantia); return acc; },{}));
+        return <><Header title="Faturamento" desc="Análise de vendas, líquido, bruto, lucro e formas de pagamento."/><PeriodFilter {...f} includeYesterday />
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6"><KPI label="Faturamento bruto" value={BRL.format(bruto)}/><KPI label="Faturamento líquido" value={BRL.format(liquido)} good/><KPI label="Saídas subtraídas" value={BRL.format(s)} good={false}/><KPI label="Vendas / Ticket" value={entradas.length} sub={BRL.format(ticket)}/><KPI label="Lucro líquido" value={BRL.format(liquido-s)} good={liquido-s>=0}/></div>
+          <div className="grid lg:grid-cols-2 gap-6"><Card className="h-80"><h2 className="font-bold mb-3">Vendas por dia</h2><ResponsiveContainer><BarChart data={groupDaily(entradas)}><CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/><XAxis dataKey="date" stroke="#94a3b8"/><YAxis stroke="#94a3b8"/><Tooltip/><Bar dataKey="entradas" fill="#22c55e"/></BarChart></ResponsiveContainer></Card><Card className="h-80"><h2 className="font-bold mb-3">Forma de pagamento</h2><ResponsiveContainer><PieChart><Pie data={pay} dataKey="value" nameKey="name" outerRadius={95} label>{pay.map((_,i)=><Cell key={i} fill={['#22c55e','#3b82f6','#eab308','#a855f7','#f97316','#64748b'][i%6]}/>)}</Pie><Tooltip formatter={(v)=>BRL.format(v)}/><Legend/></PieChart></ResponsiveContainer></Card></div>
+        </>;
+      }
+
+      function Entries({ products, setProducts, addTransaction, transactions, deleteTransaction }) {
+        const [q,setQ]=useState(''); const [cart,setCart]=useState([]); const [pay,setPay]=useState('Pix'); const [custom,setCustom]=useState(''); const [date,setDate]=useState(todayISO()); const [client,setClient]=useState(false); const [cliente,setCliente]=useState({nome:'',cpf:'',email:''});
+        const catalog = products.filter(p=>p.nome.toLowerCase().includes(q.toLowerCase()));
+        function addToCart(p){ setCart(c=>{ const ex=c.find(i=>i.id===p.id); if(ex) return c.map(i=>i.id===p.id?{...i,qty:i.qty+1}:i); return [...c,{...p,qty:1,bruto:p.preco,liquido:p.preco}] }); }
+        function importCSV(e){ const file=e.target.files[0]; if(!file)return; const r=new FileReader(); r.onload=()=>{ const lines=r.result.split(/\r?\n/).slice(1); const items=lines.map(l=>{const [nome,preco]=l.split(','); return nome?{id:uid(),nome:nome.trim(),preco:Number(String(preco).replace(',','.'))||0}:null}).filter(Boolean); setProducts([...products,...items]); }; r.readAsText(file); }
+        function newProduct(){ const nome=prompt('Nome do produto'); if(!nome)return; const preco=Number(prompt('Preço')?.replace(',','.'))||0; setProducts([{id:uid(),nome,preco},...products]); }
+        function submit(){ if(cart.length===0)return alert('Adicione produtos ao carrinho.'); cart.forEach(i=>addTransaction({ tipo:'entrada', descricao:i.nome, quantia:Number(i.liquido)*i.qty, metodo_de_pagamento: custom || pay, data_da_transacao:date, category:{ bruto:Number(i.bruto)*i.qty, liquido:Number(i.liquido)*i.qty, cliente, quantidade:i.qty, metodo_customizado:custom } })); setCart([]); alert('Entrada registrada com sucesso.'); }
+        const totalB=sum(cart,i=>i.bruto*i.qty), totalL=sum(cart,i=>i.liquido*i.qty);
+        return <><Header title="Entradas" desc="Cadastre vendas, gerencie catálogo e exporte histórico."/>
+          <div className="grid lg:grid-cols-2 gap-6"><Card><div className="flex gap-2 mb-4"><input placeholder="Buscar produto" value={q} onChange={e=>setQ(e.target.value)} className="flex-1 px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><button onClick={newProduct} className="px-4 rounded-xl bg-white text-black font-bold">+</button><label className="px-4 py-3 rounded-xl bg-slate-800 cursor-pointer no-print">CSV<input type="file" accept=".csv" onChange={importCSV} className="hidden"/></label></div><div className="space-y-3 max-h-[520px] overflow-auto scrollbar">{catalog.map(p=><div key={p.id} className="p-3 rounded-2xl bg-slate-950 border border-slate-800 flex justify-between gap-3"><div className="flex-1"><input value={p.nome} onChange={e=>setProducts(products.map(x=>x.id===p.id?{...x,nome:e.target.value}:x))} className="w-full bg-transparent font-semibold outline-none"/><input value={p.preco} type="number" onChange={e=>setProducts(products.map(x=>x.id===p.id?{...x,preco:Number(e.target.value)}:x))} className="w-28 mt-1 bg-transparent text-slate-400 outline-none"/></div><button onClick={()=>addToCart(p)} className="px-4 py-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Adicionar</button></div>)}</div></Card>
+          <Card className="lg:sticky lg:top-6 h-fit"><h2 className="text-xl font-bold mb-4">Carrinho</h2>{cart.length===0 && <p className="text-slate-500 mb-4">Nenhum produto selecionado.</p>}{cart.map(i=><div key={i.id} className="mb-3 p-3 rounded-2xl bg-slate-950 border border-slate-800"><div className="flex justify-between"><b>{i.nome}</b><button onClick={()=>setCart(cart.filter(x=>x.id!==i.id))} className="text-red-300">remover</button></div><div className="grid grid-cols-3 gap-2 mt-3"><input type="number" value={i.qty} onChange={e=>setCart(cart.map(x=>x.id===i.id?{...x,qty:Number(e.target.value)}:x))} className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700"/><input type="number" value={i.bruto} onChange={e=>setCart(cart.map(x=>x.id===i.id?{...x,bruto:Number(e.target.value)}:x))} className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700" placeholder="Bruto"/><input type="number" value={i.liquido} onChange={e=>setCart(cart.map(x=>x.id===i.id?{...x,liquido:Number(e.target.value)}:x))} className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700" placeholder="Líquido"/></div></div>)}<div className="grid grid-cols-2 gap-3 my-4"><KPI label="Total bruto" value={BRL.format(totalB)}/><KPI label="Total líquido" value={BRL.format(totalL)} good/></div><div className="grid gap-3"><select value={pay} onChange={e=>setPay(e.target.value)} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"><option>Pix</option><option>Crédito</option><option>Débito</option><option>Dinheiro</option><option>Boleto</option><option>Outro</option></select><input value={custom} onChange={e=>setCustom(e.target.value)} placeholder="Forma personalizada opcional" className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><input type="date" value={date} onChange={e=>setDate(e.target.value)} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><button onClick={()=>setClient(!client)} className="text-left text-slate-300">Dados do cliente opcionais {client?'▲':'▼'}</button>{client && <div className="grid gap-2"><input placeholder="Nome" onChange={e=>setCliente({...cliente,nome:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><input placeholder="CPF" onChange={e=>setCliente({...cliente,cpf:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><input placeholder="E-mail" onChange={e=>setCliente({...cliente,email:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/></div>}<button onClick={submit} className="py-3 rounded-xl bg-white text-black font-black">Registrar entrada</button></div></Card></div>
+          <div className="mt-6"><ExportButtons data={transactions.filter(t=>t.tipo==='entrada')} filename="entradas"/><Movements transactions={transactions.filter(t=>t.tipo==='entrada').slice(0,30)} deleteTransaction={deleteTransaction}/></div>
+        </>;
+      }
+
+      function Expenses({ addTransaction, transactions, updateTransaction, deleteTransaction }) {
+        const f = useFiltered(transactions.filter(t=>t.tipo==='saida'), '30');
+        const [form,setForm]=useState({motivo:'',valor:'',data:todayISO(),forma:'Pix',modalidade:'À vista',parcelas:1,juros:0,total:''});
+        const totalPrincipal=sum(f.filtered,t=>t.quantia), totalPagar=sum(f.filtered,t=>t.category?.total_a_pagar||t.quantia); const avg=f.filtered.length?totalPagar/f.filtered.length:0;
+        const daily=groupDaily(f.filtered), pay=Object.values(f.filtered.reduce((a,t)=>{const k=t.metodo_de_pagamento||'Outro';a[k]||={name:k,value:0};a[k].value+=Number(t.category?.total_a_pagar||t.quantia);return a;},{}));
+        function calcTotal(){ const v=Number(form.valor)||0, j=Number(form.juros)||0; return form.total ? Number(form.total) : v+(v*j/100); }
+        function submit(){ if(!form.motivo || !form.valor)return alert('Preencha motivo e valor.'); addTransaction({tipo:'saida',descricao:form.motivo,quantia:Number(form.valor),metodo_de_pagamento:form.forma,data_da_transacao:form.data,category:{modalidade:form.modalidade,parcelas:Number(form.parcelas),juros_percentual:Number(form.juros),total_a_pagar:calcTotal()}}); setForm({...form,motivo:'',valor:'',total:''}); }
+        return <><Header title="Saídas" desc="Controle despesas à vista, parceladas, juros, edição e exportação."/><PeriodFilter {...f}/>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6"><KPI label="Total principal" value={BRL.format(totalPrincipal)} /><KPI label="Total a pagar" value={BRL.format(totalPagar)} good={false}/><KPI label="À vista × parcelado" value={`${f.filtered.filter(t=>t.category?.modalidade==='À vista').length} × ${f.filtered.filter(t=>t.category?.modalidade==='Parcelado').length}`}/><KPI label="Bilhete médio" value={BRL.format(avg)}/></div>
+          <div className="grid lg:grid-cols-2 gap-6 mb-6"><Card className="h-72"><ResponsiveContainer><BarChart data={daily}><CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/><XAxis dataKey="date" stroke="#94a3b8"/><YAxis stroke="#94a3b8"/><Tooltip/><Bar dataKey="saidas" fill="#ef4444"/></BarChart></ResponsiveContainer></Card><Card className="h-72"><ResponsiveContainer><PieChart><Pie data={pay} dataKey="value" nameKey="name" outerRadius={90} label>{pay.map((_,i)=><Cell key={i} fill={['#ef4444','#f97316','#eab308','#a855f7','#3b82f6'][i%5]}/>)}</Pie><Tooltip formatter={(v)=>BRL.format(v)}/><Legend/></PieChart></ResponsiveContainer></Card></div>
+          <Card className="mb-6"><h2 className="text-xl font-bold mb-4">Nova saída</h2><div className="grid md:grid-cols-4 gap-3"><input placeholder="Motivo do gasto" value={form.motivo} onChange={e=>setForm({...form,motivo:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><input type="number" placeholder="Valor" value={form.valor} onChange={e=>setForm({...form,valor:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><input type="date" value={form.data} onChange={e=>setForm({...form,data:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><select value={form.forma} onChange={e=>setForm({...form,forma:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"><option>Pix</option><option>Crédito</option><option>Débito</option><option>Dinheiro</option><option>Boleto</option><option>Outro</option></select><select value={form.modalidade} onChange={e=>setForm({...form,modalidade:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"><option>À vista</option><option>Parcelado</option></select>{form.modalidade==='Parcelado' && <><input type="number" placeholder="Parcelas" value={form.parcelas} onChange={e=>setForm({...form,parcelas:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><input type="number" placeholder="Juros %" value={form.juros} onChange={e=>setForm({...form,juros:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><input type="number" placeholder="Total a pagar manual" value={form.total} onChange={e=>setForm({...form,total:e.target.value})} className="px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/></>}<button onClick={submit} className="py-3 rounded-xl bg-white text-black font-black">Registrar saída</button></div></Card>
+          <ExportButtons data={f.filtered} filename="saidas"/><EditableExpenseList items={f.filtered} updateTransaction={updateTransaction} deleteTransaction={deleteTransaction}/>
+        </>;
+      }
+
+      function EditableExpenseList({ items, updateTransaction, deleteTransaction }) {
+        const [q,setQ]=useState(''); const list=items.filter(i=>i.descricao.toLowerCase().includes(q.toLowerCase()));
+        return <Card><div className="flex justify-between gap-3 mb-4"><h2 className="text-xl font-bold">Lista de saídas</h2><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar" className="px-4 py-2 rounded-xl bg-slate-950 border border-slate-700"/></div><div className="hidden md:block overflow-x-auto"><table className="w-full text-sm"><thead className="text-slate-400"><tr><th className="text-left p-3">Data</th><th className="text-left p-3">Motivo</th><th className="text-left p-3">Forma</th><th className="text-left p-3">Valor</th><th className="text-left p-3">A pagar</th><th className="p-3">Ação</th></tr></thead><tbody>{list.map(t=><tr key={t.id} className="border-t border-slate-800"><td className="p-3"><input type="date" value={t.data_da_transacao} onChange={e=>updateTransaction(t.id,{data_da_transacao:e.target.value})} className="bg-transparent"/></td><td className="p-3"><input value={t.descricao} onChange={e=>updateTransaction(t.id,{descricao:e.target.value})} className="bg-transparent"/></td><td className="p-3">{t.metodo_de_pagamento}</td><td className="p-3">{BRL.format(t.quantia)}</td><td className="p-3">{BRL.format(t.category?.total_a_pagar||t.quantia)}</td><td className="p-3 text-center"><button onClick={()=>deleteTransaction(t.id)} className="text-red-300">Excluir</button></td></tr>)}</tbody></table></div><div className="md:hidden space-y-3">{list.map(t=><div key={t.id} className="p-4 rounded-2xl bg-slate-950 border border-slate-800"><input value={t.descricao} onChange={e=>updateTransaction(t.id,{descricao:e.target.value})} className="bg-transparent font-bold w-full"/><div className="text-sm text-slate-400 mt-2">{t.data_da_transacao} · {t.metodo_de_pagamento}</div><div className="text-red-300 font-bold mt-2">{BRL.format(t.category?.total_a_pagar||t.quantia)}</div><button onClick={()=>deleteTransaction(t.id)} className="text-red-300 mt-2">Excluir</button></div>)}</div></Card>;
+      }
+
+      function AI({ transactions, addTransaction }) {
+        const [convos,setConvos]=useState(()=>storage.get('cf_convos',[{id:uid(),title:'Conversa inicial',messages:[]} ])); const [active,setActive]=useState(convos[0]?.id); const [text,setText]=useState(''); const [typing,setTyping]=useState(false); const current=convos.find(c=>c.id===active)||convos[0];
+        useEffect(()=>storage.set('cf_convos',convos),[convos]);
+        function setMessages(msgs){ setConvos(convos.map(c=>c.id===active?{...c,messages:msgs}:c)); }
+        function quick(t){ setText(t); }
+        function ask(){ if(!text.trim())return; const userMsg={role:'user',content:text}; const msgs=[...(current.messages||[]),userMsg]; setMessages(msgs); const prompt=text; setText(''); setTyping(true); setTimeout(()=>{ const reply=localAI(prompt, transactions, addTransaction); setTyping(false); setMessages([...msgs,{role:'ai',content:reply}]); },650); }
+        function newChat(){ const c={id:uid(),title:'Nova conversa',messages:[]}; setConvos([c,...convos]); setActive(c.id); }
+        function removeChat(id){ const rest=convos.filter(c=>c.id!==id); setConvos(rest.length?rest:[{id:uid(),title:'Conversa inicial',messages:[]}]); setActive(rest[0]?.id); }
+        return <><Header title="IA Assistente" desc="Converse com seus dados financeiros e registre transações por comando."/><div className="grid lg:grid-cols-[280px_1fr] gap-6"><Card className="no-print h-fit"><button onClick={newChat} className="w-full py-3 rounded-xl bg-white text-black font-bold mb-4">Nova conversa</button>{convos.map(c=><div key={c.id} className={`p-3 rounded-xl mb-2 flex justify-between ${active===c.id?'bg-slate-800':'bg-slate-950'}`}><button onClick={()=>setActive(c.id)} className="truncate">{c.title}</button><button onClick={()=>{const name=prompt('Renomear',c.title); if(name)setConvos(convos.map(x=>x.id===c.id?{...x,title:name}:x))}}>✎</button><button onClick={()=>removeChat(c.id)}>×</button></div>)}</Card><Card className="min-h-[650px] flex flex-col"><div className="flex flex-wrap gap-2 mb-4 no-print">{['Mostre o faturamento dos últimos 30 dias','Quanto vendemos no Pix esse mês?','Cadastro de saída de R$ 350 aluguel','Compare o faturamento desta semana com o anterior'].map(s=><button key={s} onClick={()=>quick(s)} className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-sm">{s}</button>)}</div><div className="flex-1 overflow-auto scrollbar space-y-3 pr-1">{(current.messages||[]).map((m,i)=><div key={i} className={`flex ${m.role==='user'?'justify-end':'justify-start'}`}><div className={`max-w-[82%] p-4 rounded-2xl ${m.role==='user'?'bg-blue-600':'bg-slate-900 border border-slate-800'}`}>{m.content}</div></div>)}{typing && <div className="text-slate-400 animate-pulse">IA digitando...</div>}</div><div className="mt-4 flex gap-2 no-print"><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')ask()}} placeholder="Digite sua pergunta ou comando..." className="flex-1 px-4 py-3 rounded-xl bg-slate-950 border border-slate-700"/><button onClick={ask} className="px-6 rounded-xl bg-white text-black font-bold">Enviar</button></div></Card></div></>;
+      }
+      function localAI(prompt, transactions, addTransaction){
+        const p=prompt.toLowerCase(); const now=todayISO();
+        const saida = p.match(/sa[ií]da.*?r\$?\s*([\d.,]+).*?(aluguel|fornecedor|conta|energia|internet|despesa|gasto)?/i);
+        if(saida){ const valor=Number(saida[1].replace('.','').replace(',','.')); const motivo=saida[2]||'Despesa cadastrada por IA'; addTransaction({tipo:'saida',descricao:motivo,quantia:valor,metodo_de_pagamento:'Outro',data_da_transacao:now,category:{modalidade:'À vista',total_a_pagar:valor,origem:'IA'}}); return `Cadastrei uma saída de ${BRL.format(valor)} com motivo "${motivo}" para hoje.`; }
+        const entrada = p.match(/entrada|venda|vendi|recebi/); const valorMatch=p.match(/r\$?\s*([\d.,]+)/i);
+        if(entrada && valorMatch){ const valor=Number(valorMatch[1].replace('.','').replace(',','.')); addTransaction({tipo:'entrada',descricao:'Venda cadastrada por IA',quantia:valor,metodo_de_pagamento:p.includes('pix')?'Pix':'Outro',data_da_transacao:now,category:{bruto:valor,liquido:valor,origem:'IA'}}); return `Cadastrei uma entrada de ${BRL.format(valor)} para hoje.`; }
+        const entradas=sum(transactions.filter(t=>t.tipo==='entrada'),t=>t.quantia); const saidas=sum(transactions.filter(t=>t.tipo==='saida'),t=>t.category?.total_a_pagar||t.quantia); const pix=sum(transactions.filter(t=>t.tipo==='entrada' && String(t.metodo_de_pagamento).toLowerCase().includes('pix')),t=>t.quantia);
+        if(p.includes('pix')) return `Seu total de vendas no Pix registrado é ${BRL.format(pix)}.`;
+        if(p.includes('compare')) return `Comparação rápida: entradas totais ${BRL.format(entradas)}, saídas ${BRL.format(saidas)} e saldo ${BRL.format(entradas-saidas)}. Para comparação por semana, conecte a IA real ao backend ou use filtros do painel.`;
+        return `Resumo atual: faturamento líquido ${BRL.format(entradas)}, saídas ${BRL.format(saidas)} e saldo ${BRL.format(entradas-saidas)}. Também posso cadastrar comandos como: "Cadastro de saída de R$ 350 aluguel" ou "Registrar entrada de R$ 120 no Pix".`;
+      }
+
+      function History({ audit }) { return <><Header title="Histórico" desc="Auditoria cronológica de criações, atualizações e exclusões."/><Card><div className="space-y-3">{audit.length===0 && <p className="text-slate-500">Nenhum registro ainda.</p>}{audit.map(a=><div key={a.id} className="p-4 rounded-2xl bg-slate-950 border border-slate-800"><div className="flex flex-wrap gap-2 items-center"><span className="px-3 py-1 rounded-full bg-slate-800 text-xs">{a.action}</span><b>{a.entity}</b><span className="text-slate-500 text-sm">{new Date(a.at).toLocaleString('pt-BR')}</span></div><p className="text-slate-300 mt-2">{a.desc}</p><p className="text-xs text-slate-500 mt-1">Usuário: {a.user}</p></div>)}</div></Card></> }
+
+      function ExportButtons({ data, filename }) {
+        function csv(){ const rows=[['tipo','descricao','valor','forma','data','metadata'],...data.map(t=>[t.tipo,t.descricao,t.quantia,t.metodo_de_pagamento,t.data_da_transacao,JSON.stringify(t.category||{})])]; const blob=new Blob([rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n')],{type:'text/csv'}); download(blob,filename+'.csv'); }
+        function pdf(){ const { jsPDF } = window.jspdf; const doc=new jsPDF(); doc.text(filename.toUpperCase(),10,10); data.slice(0,40).forEach((t,i)=>doc.text(`${t.data_da_transacao} - ${t.descricao} - ${BRL.format(t.quantia)}`,10,20+i*7)); doc.save(filename+'.pdf'); }
+        return <div className="no-print flex gap-2 mb-4"><button onClick={csv} className="px-4 py-2 rounded-xl bg-slate-800 border border-slate-700">Exportar CSV</button><button onClick={pdf} className="px-4 py-2 rounded-xl bg-slate-800 border border-slate-700">Exportar PDF</button></div>;
+      }
+      function download(blob,name){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); URL.revokeObjectURL(a.href); }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
