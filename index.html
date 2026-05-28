@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Painel Financeiro Premium</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body { background:#050505; color:white; }
+    .card { background:#111; border:1px solid #222; border-radius:18px; padding:18px; }
+    .btn { background:#fff; color:#000; padding:10px 14px; border-radius:12px; font-weight:700; }
+    .btn-dark { background:#181818; border:1px solid #333; color:#fff; padding:10px 14px; border-radius:12px; }
+    input, select { background:#0b0b0b; border:1px solid #333; color:#fff; padding:10px; border-radius:10px; width:100%; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:12px; border-bottom:1px solid #222; text-align:left; }
+  </style>
+</head>
+
+<body>
+<div id="app"></div>
+
+<script>
+let state = JSON.parse(localStorage.getItem("finance_app")) || {
+  logged:false,
+  adminUser:"admin",
+  adminPass:"admin12345",
+  userName:"Administrador",
+  transactions:[],
+  audit:[]
+};
+
+function save(){ localStorage.setItem("finance_app", JSON.stringify(state)); }
+
+function money(v){
+  return Number(v || 0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+}
+
+function today(){
+  return new Date().toISOString().split("T")[0];
+}
+
+function greeting(){
+  const h = new Date().toLocaleString("pt-BR",{timeZone:"America/Sao_Paulo",hour:"2-digit",hour12:false});
+  if(h < 12) return "Bom dia";
+  if(h < 18) return "Boa tarde";
+  return "Boa noite";
+}
+
+function addAudit(action, desc){
+  state.audit.unshift({
+    action,
+    desc,
+    date:new Date().toLocaleString("pt-BR")
+  });
+  save();
+}
+
+function login(){
+  const u = document.getElementById("loginUser").value;
+  const p = document.getElementById("loginPass").value;
+
+  if(u === state.adminUser && p === state.adminPass){
+    state.logged = true;
+    save();
+    render();
+  } else {
+    alert("Usuário ou senha inválidos.");
+  }
+}
+
+function logout(){
+  state.logged=false;
+  save();
+  render();
+}
+
+function changeAdmin(){
+  const name = document.getElementById("newName").value;
+  const user = document.getElementById("newUser").value;
+  const pass = document.getElementById("newPass").value;
+
+  if(name) state.userName = name;
+  if(user) state.adminUser = user;
+  if(pass) state.adminPass = pass;
+
+  addAudit("Atualização", "Dados de acesso do administrador alterados");
+  alert("Dados atualizados com sucesso!");
+  render();
+}
+
+function filtered(days=30, type=null){
+  const now = new Date();
+  return state.transactions.filter(t=>{
+    const d = new Date(t.date);
+    const diff = (now-d)/(1000*60*60*24);
+    return diff <= days && (!type || t.type===type);
+  });
+}
+
+function totals(list){
+  const entradas = list.filter(t=>t.type==="entrada").reduce((a,b)=>a+Number(b.value),0);
+  const saidas = list.filter(t=>t.type==="saida").reduce((a,b)=>a+Number(b.value),0);
+  return {entradas, saidas, saldo:entradas-saidas};
+}
+
+function addEntrada(){
+  const desc = document.getElementById("entradaDesc").value;
+  const bruto = Number(document.getElementById("entradaBruto").value || 0);
+  const liquido = Number(document.getElementById("entradaLiquido").value || bruto);
+  const pay = document.getElementById("entradaPay").value;
+  const date = document.getElementById("entradaDate").value || today();
+
+  if(!desc || !liquido) return alert("Preencha descrição e valor.");
+
+  state.transactions.unshift({
+    id:Date.now(),
+    type:"entrada",
+    desc,
+    value:liquido,
+    bruto,
+    pay,
+    date
+  });
+
+  addAudit("Criar", "Entrada criada: " + desc);
+  render("entradas");
+}
+
+function addSaida(){
+  const desc = document.getElementById("saidaDesc").value;
+  const value = Number(document.getElementById("saidaValue").value || 0);
+  const pay = document.getElementById("saidaPay").value;
+  const mod = document.getElementById("saidaMod").value;
+  const juros = Number(document.getElementById("saidaJuros").value || 0);
+  const parcelas = Number(document.getElementById("saidaParcelas").value || 1);
+  const date = document.getElementById("saidaDate").value || today();
+  const total = value + (value * juros / 100);
+
+  if(!desc || !value) return alert("Preencha motivo e valor.");
+
+  state.transactions.unshift({
+    id:Date.now(),
+    type:"saida",
+    desc,
+    value,
+    pay,
+    mod,
+    juros,
+    parcelas,
+    total,
+    date
+  });
+
+  addAudit("Criar", "Saída criada: " + desc);
+  render("saidas");
+}
+
+function del(id){
+  const item = state.transactions.find(t=>t.id===id);
+  if(confirm("Deseja excluir?")){
+    state.transactions = state.transactions.filter(t=>t.id!==id);
+    addAudit("Excluir", "Transação excluída: " + item.desc);
+    render(currentPage);
+  }
+}
+
+let currentPage = "painel";
+
+function render(page="painel"){
+  currentPage = page;
+
+  if(!state.logged){
+    document.getElementById("app").innerHTML = `
+      <div class="min-h-screen grid md:grid-cols-2">
+        <div class="hidden md:flex flex-col justify-center p-16 bg-[#090909]">
+          <h1 class="text-5xl font-black leading-tight">Controle financeiro premium para sua loja.</h1>
+          <p class="text-gray-400 mt-5 text-lg">Gerencie entradas, saídas, faturamento, lucro e histórico em tempo real.</p>
+        </div>
+
+        <div class="flex items-center justify-center p-6">
+          <div class="card w-full max-w-md">
+            <h2 class="text-3xl font-black mb-2">Entrar</h2>
+            <p class="text-gray-400 mb-6">Acesso inicial: admin / admin12345</p>
+
+            <label>Usuário</label>
+            <input id="loginUser" placeholder="admin" class="mb-4" />
+
+            <label>Senha</label>
+            <input id="loginPass" type="password" placeholder="admin12345" class="mb-5" />
+
+            <button onclick="login()" class="btn w-full">Acessar painel</button>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  document.getElementById("app").innerHTML = `
+    <div class="min-h-screen md:flex">
+      <aside class="md:w-72 bg-[#080808] border-r border-[#222] p-5">
+        <h1 class="text-2xl font-black mb-8">Finance ERP</h1>
+
+        <nav class="space-y-2">
+          ${navBtn("painel","Caixa")}
+          ${navBtn("faturamento","Faturamento")}
+          ${navBtn("entradas","Entradas")}
+          ${navBtn("saidas","Saídas")}
+          ${navBtn("ia","IA Assistente")}
+          ${navBtn("historico","Histórico")}
+          ${navBtn("config","Admin")}
+        </nav>
+
+        <div class="mt-10 text-sm text-gray-400">
+          <p>${state.userName}</p>
+          <p>Usuário: ${state.adminUser}</p>
+          <button onclick="logout()" class="btn-dark mt-4 w-full">Sair</button>
+        </div>
+      </aside>
+
+      <main class="flex-1 p-5 md:p-8">
+        ${pageContent(page)}
+      </main>
+    </div>
+  `;
+
+  setTimeout(drawCharts, 100);
+}
+
+function navBtn(page,label){
+  return `<button onclick="render('${page}')" class="w-full text-left px-4 py-3 rounded-xl ${currentPage===page?'bg-white text-black':'bg-[#111] text-white'}">${label}</button>`;
+}
+
+function pageContent(page){
+  if(page==="painel") return painel();
+  if(page==="faturamento") return faturamento();
+  if(page==="entradas") return entradas();
+  if(page==="saidas") return saidas();
+  if(page==="ia") return ia();
+  if(page==="historico") return historico();
+  if(page==="config") return config();
+}
+
+function painel(){
+  const list = filtered(30);
+  const t = totals(list);
+  const percent = Math.min((t.entradas / 10000) * 100, 100);
+
+  return `
+    <h2 class="text-3xl font-black mb-2">${greeting()}, ${state.userName}</h2>
+    <p class="text-gray-400 mb-6">Resumo financeiro em tempo real.</p>
+
+    <div class="card mb-6">
+      <div class="flex justify-between mb-2">
+        <b>Meta progressiva</b>
+        <span>${money(t.entradas)} / R$ 10.000</span>
+      </div>
+      <div class="h-4 bg-[#222] rounded-full overflow-hidden">
+        <div style="width:${percent}%" class="h-full bg-white"></div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      ${kpi("Saldo período", money(t.saldo))}
+      ${kpi("Entradas", money(t.entradas))}
+      ${kpi("Saídas", money(t.saidas))}
+      ${kpi("Faturamento", money(t.entradas))}
+    </div>
+
+    <div class="card mb-6">
+      <h3 class="font-bold mb-4">Fluxo de caixa diário</h3>
+      <canvas id="cashChart"></canvas>
+    </div>
+
+    <div class="card">
+      <h3 class="font-bold mb-4">Últimas movimentações</h3>
+      ${transactionList(state.transactions.slice(0,8))}
+    </div>
+  `;
+}
+
+function faturamento(){
+  const vendas = filtered(90,"entrada");
+  const saidas = filtered(90,"saida");
+  const bruto = vendas.reduce((a,b)=>a+Number(b.bruto||b.value),0);
+  const liquido = vendas.reduce((a,b)=>a+Number(b.value),0);
+  const s = saidas.reduce((a,b)=>a+Number(b.value),0);
+  const ticket = vendas.length ? liquido / vendas.length : 0;
+
+  return `
+    <h2 class="text-3xl font-black mb-6">Faturamento</h2>
+
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+      ${kpi("Bruto", money(bruto))}
+      ${kpi("Líquido", money(liquido))}
+      ${kpi("Saídas", money(s))}
+      ${kpi("Vendas", vendas.length)}
+      ${kpi("Lucro líquido", money(liquido-s))}
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="font-bold mb-4">Vendas por dia</h3>
+        <canvas id="barChart"></canvas>
+      </div>
+      <div class="card">
+        <h3 class="font-bold mb-4">Forma de pagamento</h3>
+        <canvas id="pieChart"></canvas>
+      </div>
+    </div>
+  `;
+}
+
+function entradas(){
+  return `
+    <h2 class="text-3xl font-black mb-6">Entradas</h2>
+
+    <div class="grid md:grid-cols-2 gap-6 mb-6">
+      <div class="card">
+        <h3 class="font-bold mb-4">Registrar venda / entrada</h3>
+
+        <input id="entradaDesc" placeholder="Produto ou descrição" class="mb-3">
+        <input id="entradaBruto" type="number" placeholder="Valor bruto" class="mb-3">
+        <input id="entradaLiquido" type="number" placeholder="Valor líquido" class="mb-3">
+
+        <select id="entradaPay" class="mb-3">
+          <option>Pix</option>
+          <option>Crédito</option>
+          <option>Débito</option>
+          <option>Dinheiro</option>
+          <option>Boleto</option>
+          <option>Outro</option>
+        </select>
+
+        <input id="entradaDate" type="date" value="${today()}" class="mb-4">
+        <button onclick="addEntrada()" class="btn w-full">Registrar entrada</button>
+      </div>
+
+      <div class="card">
+        <h3 class="font-bold mb-4">Catálogo rápido</h3>
+        <p class="text-gray-400 mb-4">Modelo simplificado para MVP. Produtos podem ser cadastrados como entrada diretamente.</p>
+        <button onclick="exportCSV('entrada')" class="btn-dark">Exportar CSV</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="font-bold mb-4">Histórico de entradas</h3>
+      ${transactionList(state.transactions.filter(t=>t.type==="entrada").slice(0,30))}
+    </div>
+  `;
+}
+
+function saidas(){
+  const list = state.transactions.filter(t=>t.type==="saida");
+  const total = list.reduce((a,b)=>a+Number(b.value),0);
+  const pagar = list.reduce((a,b)=>a+Number(b.total||b.value),0);
+
+  return `
+    <h2 class="text-3xl font-black mb-6">Saídas</h2>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      ${kpi("Principal", money(total))}
+      ${kpi("Total a pagar", money(pagar))}
+      ${kpi("Quantidade", list.length)}
+      ${kpi("Ticket médio", money(list.length ? total/list.length : 0))}
+    </div>
+
+    <div class="card mb-6">
+      <h3 class="font-bold mb-4">Nova saída</h3>
+
+      <div class="grid md:grid-cols-3 gap-3">
+        <input id="saidaDesc" placeholder="Motivo do gasto">
+        <input id="saidaValue" type="number" placeholder="Valor R$">
+        <input id="saidaDate" type="date" value="${today()}">
+
+        <select id="saidaPay">
+          <option>Pix</option>
+          <option>Crédito</option>
+          <option>Débito</option>
+          <option>Dinheiro</option>
+          <option>Boleto</option>
+          <option>Outro</option>
+        </select>
+
+        <select id="saidaMod">
+          <option>À vista</option>
+          <option>Parcelado</option>
+        </select>
+
+        <input id="saidaParcelas" type="number" placeholder="Parcelas" value="1">
+        <input id="saidaJuros" type="number" placeholder="Juros %" value="0">
+      </div>
+
+      <button onclick="addSaida()" class="btn mt-4">Registrar saída</button>
+      <button onclick="exportCSV('saida')" class="btn-dark mt-4">Exportar CSV</button>
+    </div>
+
+    <div class="card">
+      <h3 class="font-bold mb-4">Lista de saídas</h3>
+      ${transactionList(list)}
+    </div>
+  `;
+}
+
+function ia(){
+  return `
+    <h2 class="text-3xl font-black mb-6">IA Assistente</h2>
+
+    <div class="card">
+      <p class="text-gray-400 mb-4">Exemplos:</p>
+      <div class="flex flex-wrap gap-2 mb-5">
+        <button class="btn-dark" onclick="askIA('Mostre o faturamento dos últimos 30 dias')">Faturamento 30 dias</button>
+        <button class="btn-dark" onclick="askIA('Quanto vendemos no Pix esse mês?')">Vendas no Pix</button>
+        <button class="btn-dark" onclick="askIA('Cadastro de saída de R$ 350 aluguel')">Cadastrar saída</button>
+      </div>
+
+      <div id="chatBox" class="bg-[#080808] rounded-xl p-4 h-80 overflow:auto mb-4"></div>
+
+      <div class="flex gap-2">
+        <input id="iaInput" placeholder="Digite um comando financeiro...">
+        <button onclick="askIA()" class="btn">Enviar</button>
+      </div>
+    </div>
+  `;
+}
+
+function askIA(text=null){
+  const input = document.getElementById("iaInput");
+  const msg = text || input.value;
+  if(!msg) return;
+
+  const box = document.getElementById("chatBox");
+  box.innerHTML += `<div class="text-right mb-3"><span class="bg-white text-black px-4 py-2 rounded-xl inline-block">${msg}</span></div>`;
+
+  let response = "Analisei seus dados. ";
+  const list = filtered(30);
+  const t = totals(list);
+
+  if(msg.toLowerCase().includes("faturamento")){
+    response += "Seu faturamento nos últimos 30 dias é " + money(t.entradas) + ".";
+  } else if(msg.toLowerCase().includes("pix")){
+    const pix = state.transactions.filter(x=>x.type==="entrada" && x.pay==="Pix").reduce((a,b)=>a+Number(b.value),0);
+    response += "Você vendeu " + money(pix) + " no Pix.";
+  } else if(msg.toLowerCase().includes("saída") || msg.toLowerCase().includes("saida")){
+    const valor = msg.match(/\\d+/);
+    state.transactions.unshift({
+      id:Date.now(),
+      type:"saida",
+      desc:"Saída cadastrada pela IA",
+      value:Number(valor ? valor[0] : 0),
+      pay:"Outro",
+      mod:"À vista",
+      date:today()
+    });
+    addAudit("Criar", "Saída criada pela IA");
+    response += "Cadastrei a saída no sistema.";
+  } else {
+    response += "Posso comparar períodos, analisar faturamento e cadastrar entradas ou saídas.";
+  }
+
+  box.innerHTML += `<div class="text-left mb-3"><span class="bg-[#222] px-4 py-2 rounded-xl inline-block">${response}</span></div>`;
+  input.value="";
+  save();
+}
+
+function historico(){
+  return `
+    <h2 class="text-3xl font-black mb-6">Histórico de Auditoria</h2>
+    <div class="card">
+      ${state.audit.map(a=>`
+        <div class="border-b border-[#222] py-3">
+          <b>${a.action}</b>
+          <p class="text-gray-400">${a.desc}</p>
+          <small>${a.date}</small>
+        </div>
+      `).join("") || "Nenhum registro ainda."}
+    </div>
+  `;
+}
+
+function config(){
+  return `
+    <h2 class="text-3xl font-black mb-6">Configurações do Admin</h2>
+
+    <div class="card max-w-xl">
+      <p class="text-gray-400 mb-5">Aqui você pode mudar nome, usuário e senha de acesso.</p>
+
+      <label>Nome exibido</label>
+      <input id="newName" placeholder="${state.userName}" class="mb-4">
+
+      <label>Novo usuário</label>
+      <input id="newUser" placeholder="${state.adminUser}" class="mb-4">
+
+      <label>Nova senha</label>
+      <input id="newPass" type="password" placeholder="Nova senha" class="mb-5">
+
+      <button onclick="changeAdmin()" class="btn w-full">Salvar alterações</button>
+    </div>
+  `;
+}
+
+function kpi(label,value){
+  return `
+    <div class="card">
+      <p class="text-gray-400 text-sm">${label}</p>
+      <h3 class="text-xl md:text-2xl font-black mt-2 break-all">${value}</h3>
+    </div>
+  `;
+}
+
+function transactionList(list){
+  if(!list.length) return `<p class="text-gray-400">Nenhuma transação registrada.</p>`;
+
+  return `
+    <div class="overflow-auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>Descrição</th>
+            <th>Forma</th>
+            <th>Valor</th>
+            <th>Ação</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${list.map(t=>`
+            <tr>
+              <td>${new Date(t.date).toLocaleDateString("pt-BR")}</td>
+              <td>${t.desc}</td>
+              <td>${t.pay || "-"}</td>
+              <td class="${t.type==='entrada'?'text-green-400':'text-red-400'}">${t.type==='entrada'?'+':'-'} ${money(t.value)}</td>
+              <td><button onclick="del(${t.id})" class="btn-dark">Excluir</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function drawCharts(){
+  const list = filtered(30);
+  const entradas = list.filter(t=>t.type==="entrada").reduce((a,b)=>a+Number(b.value),0);
+  const saidas = list.filter(t=>t.type==="saida").reduce((a,b)=>a+Number(b.value),0);
+
+  if(document.getElementById("cashChart")){
+    new Chart(document.getElementById("cashChart"), {
+      type:"line",
+      data:{
+        labels:["Entradas","Saídas","Saldo"],
+        datasets:[{
+          label:"Fluxo",
+          data:[entradas, saidas, entradas-saidas],
+          borderColor:"#fff",
+          backgroundColor:"rgba(255,255,255,.15)",
+          fill:true
+        }]
+      }
+    });
+  }
+
+  if(document.getElementById("barChart")){
+    new Chart(document.getElementById("barChart"), {
+      type:"bar",
+      data:{
+        labels:["Faturamento","Saídas","Lucro"],
+        datasets:[{
+          label:"Valores",
+          data:[entradas, saidas, entradas-saidas],
+          backgroundColor:["#fff","#777","#333"]
+        }]
+      }
+    });
+  }
+
+  if(document.getElementById("pieChart")){
+    const pays = {};
+    state.transactions.filter(t=>t.type==="entrada").forEach(t=>{
+      pays[t.pay] = (pays[t.pay] || 0) + Number(t.value);
+    });
+
+    new Chart(document.getElementById("pieChart"), {
+      type:"pie",
+      data:{
+        labels:Object.keys(pays),
+        datasets:[{
+          data:Object.values(pays),
+          backgroundColor:["#fff","#999","#666","#333","#aaa"]
+        }]
+      }
+    });
+  }
+}
+
+function exportCSV(type){
+  const rows = state.transactions.filter(t=>t.type===type);
+  let csv = "data,tipo,descricao,forma,valor\\n";
+  rows.forEach(t=>{
+    csv += `${t.date},${t.type},${t.desc},${t.pay},${t.value}\\n`;
+  });
+
+  const blob = new Blob([csv],{type:"text/csv"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = type + ".csv";
+  a.click();
+}
+
+render();
+</script>
+</body>
+</html>
